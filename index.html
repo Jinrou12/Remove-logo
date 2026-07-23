@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LogoRemovie Studio - AI-Powered Image & Video Logo Remover</title>
+  <meta name="description" content="Remove watermarks, logos, stamps, and unwanted objects from images and videos directly in your browser with smart AI inpainting.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Navigation Header -->
+    <header class="app-header">
+      <div class="logo-brand">
+        <div class="brand-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="m9 12 2 2 4-4"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>LogoRemovie <span class="badge">STUDIO</span></h1>
+          <p>Remove logos & watermarks from photos and videos instantly</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="btnDemoImage" class="btn btn-secondary btn-sm">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>
+            <circle cx="9" cy="9" r="2"/>
+            <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+          </svg>
+          Demo Image
+        </button>
+        <button id="btnDemoVideo" class="btn btn-secondary btn-sm">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect width="18" height="18" x="3" y="3" rx="2"/>
+            <path d="m10 8 6 4-6 4V8z"/>
+          </svg>
+          Demo Video
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Workspace Grid -->
+    <main class="workspace">
+      <!-- Upload Overlay / Drop Zone (when empty) -->
+      <section id="dropZone" class="upload-zone">
+        <div class="drop-card">
+          <div class="upload-icon-wrapper">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+          </div>
+          <h2>Upload Your Image or Video</h2>
+          <p class="subtitle">Drag & drop media files here, or click to browse</p>
+          <div class="supported-formats">
+            <span>PNG</span> <span>JPG</span> <span>WEBP</span> <span>MP4</span> <span>WEBM</span>
+          </div>
+          <button id="btnUploadTrigger" class="btn btn-primary btn-lg">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            Select Media File
+          </button>
+          <input type="file" id="fileInput" accept="image/*,video/*" class="hidden-input">
+        </div>
+      </section>
+
+      <!-- Active Editor Workspace (shown after file loaded) -->
+      <section id="editorWorkspace" class="editor-workspace hidden">
+        <!-- Left Toolbar -->
+        <aside class="editor-toolbar">
+          <div class="tool-group">
+            <span class="tool-group-title">Selection Tools</span>
+            <button id="toolBox" class="tool-btn active" data-tooltip="Rectangle Box Mask">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="3 3"/>
+              </svg>
+              <span>Box Tool</span>
+            </button>
+            <button id="toolBrush" class="tool-btn" data-tooltip="Paint Brush Mask">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/>
+                <path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/>
+              </svg>
+              <span>Brush</span>
+            </button>
+            <button id="toolAutoDetect" class="tool-btn highlight" data-tooltip="Auto-detect logo/watermark position">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3z"/>
+              </svg>
+              <span>Auto Detect</span>
+            </button>
+          </div>
+
+          <div class="tool-group" id="brushControls" style="display: none;">
+            <span class="tool-group-title">Brush Size</span>
+            <div class="range-control">
+              <input type="range" id="brushSize" min="5" max="100" value="25">
+              <span id="brushSizeVal">25px</span>
+            </div>
+          </div>
+
+          <div class="tool-group">
+            <span class="tool-group-title">Actions</span>
+            <button id="btnUndoMask" class="tool-btn" data-tooltip="Undo Last Mask">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 7v6h6"/>
+                <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>
+              </svg>
+              <span>Undo</span>
+            </button>
+            <button id="btnClearMask" class="tool-btn danger" data-tooltip="Clear All Masks">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 6h18"/>
+                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+              </svg>
+              <span>Clear Mask</span>
+            </button>
+          </div>
+        </aside>
+
+        <!-- Center Canvas Viewport -->
+        <div class="canvas-viewport">
+          <div class="viewport-header">
+            <div class="media-info">
+              <span id="mediaTypeBadge" class="badge-tag">IMAGE</span>
+              <span id="mediaName">sample.png</span>
+              <span id="mediaDimensions" class="dim-tag">1920x1080</span>
+            </div>
+            <div class="view-toggles">
+              <button id="btnToggleCompare" class="btn btn-sm btn-outline">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect width="18" height="18" x="3" y="3" rx="2"/>
+                  <path d="M12 3v18"/>
+                </svg>
+                Split Compare
+              </button>
+              <button id="btnResetMedia" class="btn btn-sm btn-secondary">Change File</button>
+            </div>
+          </div>
+
+          <!-- Canvas Container -->
+          <div id="canvasStage" class="canvas-stage">
+            <!-- Canvas Layer stacked -->
+            <div id="canvasWrapper" class="canvas-wrapper">
+              <canvas id="mediaCanvas"></canvas>
+              <canvas id="maskCanvas"></canvas>
+              <canvas id="cursorCanvas"></canvas>
+              
+              <!-- Comparison Overlay Split Slider -->
+              <div id="compareContainer" class="compare-container hidden">
+                <canvas id="resultCanvas"></canvas>
+                <div id="compareDivider" class="compare-divider">
+                  <div class="divider-handle">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <path d="m18 8 4 4-4 4M6 8l-4 4 4 4"/>
+                    </svg>
+                  </div>
+                </div>
+                <span class="compare-label before">Original</span>
+                <span class="compare-label after">Cleaned</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Video Controller Bar (when Video mode active) -->
+          <div id="videoBar" class="video-bar hidden">
+            <button id="btnPlayPause" class="btn-icon">
+              <svg id="iconPlay" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <polygon points="5 3 19 12 5 21 5 3"/>
+              </svg>
+              <svg id="iconPause" class="hidden" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="4" width="4" height="16"/>
+                <rect x="14" y="4" width="4" height="16"/>
+              </svg>
+            </button>
+            <span id="videoTime" class="time-code">00:00 / 00:00</span>
+            <input type="range" id="videoScrubber" min="0" max="100" value="0" step="0.1" class="video-slider">
+            <button id="btnMuteVideo" class="btn-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Right Settings & Removal Control Panel -->
+        <aside class="editor-settings">
+          <div class="panel-section">
+            <h3 class="panel-title">Removal Algorithm</h3>
+            <div class="algorithm-cards">
+              <label class="algo-card active">
+                <input type="radio" name="algo" value="inpaint" checked>
+                <div class="algo-content">
+                  <div class="algo-header">
+                    <span class="algo-name">AI Inpainting</span>
+                    <span class="algo-badge">Recommended</span>
+                  </div>
+                  <p class="algo-desc">Propagates surrounding textures naturally into logo region (Telea Fast Marching).</p>
+                </div>
+              </label>
+
+              <label class="algo-card">
+                <input type="radio" name="algo" value="blur">
+                <div class="algo-content">
+                  <div class="algo-header">
+                    <span class="algo-name">Gaussian Blur</span>
+                  </div>
+                  <p class="algo-desc">Smoothly diffuses logo pixels into soft, unobtrusive background gradient.</p>
+                </div>
+              </label>
+
+              <label class="algo-card">
+                <input type="radio" name="algo" value="mosaic">
+                <div class="algo-content">
+                  <div class="algo-header">
+                    <span class="algo-name">Mosaic Pixelate</span>
+                  </div>
+                  <p class="algo-desc">Pixelates logo area into grid blocks to obscure sensitive details.</p>
+                </div>
+              </label>
+
+              <label class="algo-card">
+                <input type="radio" name="algo" value="color">
+                <div class="algo-content">
+                  <div class="algo-header">
+                    <span class="algo-name">Background Patch</span>
+                  </div>
+                  <p class="algo-desc">Fills target box with sampled dominant surrounding edge color.</p>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <!-- Parameters Tuning -->
+          <div class="panel-section">
+            <h3 class="panel-title">Quality & Radius Tuning</h3>
+            <div class="setting-row">
+              <label for="inpaintRadius">Inpaint Search Radius</label>
+              <div class="range-control">
+                <input type="range" id="inpaintRadius" min="2" max="20" value="8">
+                <span id="inpaintRadiusVal">8px</span>
+              </div>
+            </div>
+            <div class="setting-row">
+              <label for="blurRadius">Blur Intensity</label>
+              <div class="range-control">
+                <input type="range" id="blurRadius" min="5" max="50" value="20">
+                <span id="blurRadiusVal">20px</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Video Options (when Video) -->
+          <div id="videoOptionsPanel" class="panel-section hidden">
+            <h3 class="panel-title">Video Render Options</h3>
+            <div class="setting-row">
+              <label for="videoFps">Output FPS</label>
+              <select id="videoFps" class="select-input">
+                <option value="30" selected>30 FPS (Standard)</option>
+                <option value="60">60 FPS (Smooth)</option>
+                <option value="24">24 FPS (Cinematic)</option>
+              </select>
+            </div>
+            <div class="setting-row">
+              <label for="videoQuality">Render Scale</label>
+              <select id="videoQuality" class="select-input">
+                <option value="1" selected>Original Resolution (100%)</option>
+                <option value="0.75">High Performance (75%)</option>
+                <option value="0.5">Fast Export (50%)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Action CTA Buttons -->
+          <div class="panel-actions">
+            <button id="btnProcessLogo" class="btn btn-primary btn-block">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+              </svg>
+              Remove Logo Now
+            </button>
+            <button id="btnDownload" class="btn btn-success btn-block" disabled>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download Cleaned File
+            </button>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <!-- Render / Processing Modal overlay for Video & Large Images -->
+    <div id="renderModal" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="spinner"></div>
+          <h3>Processing & Removing Logo...</h3>
+        </div>
+        <div class="modal-body">
+          <p id="renderStatusText">Inpainting video frames and processing audio streams...</p>
+          <div class="progress-bar-container">
+            <div id="renderProgressBar" class="progress-bar-fill" style="width: 0%;"></div>
+          </div>
+          <div class="render-stats">
+            <span id="renderProgressPercent">0%</span>
+            <span id="renderFrameStats">Frame 0 / 0</span>
+          </div>
+          <div class="preview-mini-canvas-container">
+            <canvas id="renderMiniCanvas" width="320" height="180"></canvas>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="btnCancelRender" class="btn btn-secondary btn-sm">Cancel Export</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hidden native elements for loading media -->
+    <video id="sourceVideo" crossorigin="anonymous" playsinline class="hidden"></video>
+  </div>
+
+  <script src="inpaint.js"></script>
+  <script src="video-processor.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
