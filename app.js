@@ -1,5 +1,5 @@
 /**
- * LogoRemovie Studio - Main Application Controller
+ * LogoRemovie Studio - Main Application Controller (Multi-File & Batch Operations)
  */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -76,7 +76,20 @@ document.addEventListener('DOMContentLoaded', () => {
   const renderMiniCtx = renderMiniCanvas.getContext('2d');
   const btnCancelRender = document.getElementById('btnCancelRender');
 
-  // State Variables
+  // Batch Media Queue Elements
+  const btnAddMoreFiles = document.getElementById('btnAddMoreFiles');
+  const chkSelectAll = document.getElementById('chkSelectAll');
+  const btnBulkDelete = document.getElementById('btnBulkDelete');
+  const btnBulkDownload = document.getElementById('btnBulkDownload');
+  const selectedDeleteCount = document.getElementById('selectedDeleteCount');
+  const selectedDownloadCount = document.getElementById('selectedDownloadCount');
+  const queueCountBadge = document.getElementById('queueCountBadge');
+  const queueItemsContainer = document.getElementById('queueItemsContainer');
+
+  // App State Variables
+  let mediaQueue = []; // items: { id, file, type, name, objectUrl, thumbnailUrl, dimensions, maskHistory, maskData, processedBlob, selected, status }
+  let activeMediaId = null;
+
   let currentFileType = null; // 'image' | 'video'
   let currentFile = null;
   let activeTool = 'box'; // 'box' | 'brush'
@@ -87,15 +100,16 @@ document.addEventListener('DOMContentLoaded', () => {
   let isComparing = false;
   let activeVideoProcessor = null;
 
-  // Initialize UI & Event Listeners
+  // Initialize Application
   initEventListeners();
 
   function initEventListeners() {
-    // File Upload Triggers
+    // File Upload Triggers (Multi-file enabled)
     btnUploadTrigger.addEventListener('click', () => fileInput.click());
+    btnAddMoreFiles.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', handleFileSelect);
     
-    // Drag & Drop
+    // Drag & Drop (Supports Multiple Files)
     dropZone.addEventListener('dragover', (e) => {
       e.preventDefault();
       dropZone.querySelector('.drop-card').classList.add('drag-over');
@@ -107,9 +121,14 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault();
       dropZone.querySelector('.drop-card').classList.remove('drag-over');
       if (e.dataTransfer.files.length > 0) {
-        processLoadedFile(e.dataTransfer.files[0]);
+        addFilesToQueue(Array.from(e.dataTransfer.files));
       }
     });
+
+    // Bulk Actions
+    chkSelectAll.addEventListener('change', (e) => toggleSelectAll(e.target.checked));
+    btnBulkDelete.addEventListener('click', deleteSelectedItems);
+    btnBulkDownload.addEventListener('click', downloadSelectedItems);
 
     // Preset Demos
     btnDemoImage.addEventListener('click', loadDemoImage);
@@ -185,59 +204,183 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function handleFileSelect(e) {
     if (e.target.files.length > 0) {
-      processLoadedFile(e.target.files[0]);
+      addFilesToQueue(Array.from(e.target.files));
+      fileInput.value = ''; // Reset input to allow re-uploading same filenames if desired
     }
   }
 
-  function processLoadedFile(file) {
-    currentFile = file;
-    const type = file.type.startsWith('video') ? 'video' : 'image';
-    currentFileType = type;
+  // Multi-File Queue Management
+  async function addFilesToQueue(files) {
+    const validFiles = files.filter(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
+    if (validFiles.length === 0) return;
 
-    mediaName.textContent = file.name;
-    mediaTypeBadge.textContent = type.toUpperCase();
-    
+    for (const file of validFiles) {
+      const type = file.type.startsWith('video') ? 'video' : 'image';
+      const id = 'media_' + Date.now() + '_' + Math.random().toString(36).substr(2, 7);
+      const objectUrl = URL.createObjectURL(file);
+
+      let thumbnailUrl = objectUrl;
+      if (type === 'video') {
+        thumbnailUrl = await createVideoThumbnail(objectUrl);
+      }
+
+      const newItem = {
+        id,
+        file,
+        type,
+        name: file.name,
+        objectUrl,
+        thumbnailUrl,
+        dimensions: { width: 1920, height: 1080 },
+        maskHistory: [],
+        maskData: null,
+        processedBlob: null,
+        selected: false,
+        status: 'ready'
+      };
+
+      mediaQueue.push(newItem);
+    }
+
     dropZone.classList.add('hidden');
     editorWorkspace.classList.remove('hidden');
 
-    if (type === 'image') {
-      videoBar.classList.add('hidden');
-      videoOptionsPanel.classList.add('hidden');
-      loadImageFile(file);
+    if (!activeMediaId && mediaQueue.length > 0) {
+      setActiveMedia(mediaQueue[mediaQueue.length - validFiles.length].id);
     } else {
-      videoBar.classList.remove('hidden');
-      videoOptionsPanel.classList.remove('hidden');
-      loadVideoFile(file);
+      renderQueueUI();
     }
   }
 
-  function loadImageFile(file) {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        setupCanvasDimensions(img.width, img.height);
-        mediaCtx.drawImage(img, 0, 0);
-        clearMask();
-        saveMaskHistory();
+  function createVideoThumbnail(videoUrl) {
+    return new Promise((resolve) => {
+      const tempVid = document.createElement('video');
+      tempVid.src = videoUrl;
+      tempVid.crossOrigin = 'anonymous';
+      tempVid.muted = true;
+      tempVid.currentTime = 0.5;
+      tempVid.onseeked = () => {
+        const c = document.createElement('canvas');
+        c.width = 160;
+        c.height = 90;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(tempVid, 0, 0, c.width, c.height);
+        resolve(c.toDataURL('image/jpeg', 0.7));
       };
-      img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
+      tempVid.onerror = () => resolve(videoUrl);
+    });
   }
 
-  function loadVideoFile(file) {
-    const url = URL.createObjectURL(file);
+  function saveCurrentActiveState() {
+    if (!activeMediaId) return;
+    const currentItem = mediaQueue.find(item => item.id === activeMediaId);
+    if (!currentItem) return;
+
+    // Save mask canvas state & history
+    currentItem.maskHistory = [...maskHistory];
+    currentItem.maskData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+    currentItem.processedBlob = currentProcessedBlob;
+
+    let hasMask = false;
+    if (currentItem.maskData) {
+      for (let i = 3; i < currentItem.maskData.data.length; i += 4) {
+        if (currentItem.maskData.data[i] > 10) {
+          hasMask = true;
+          break;
+        }
+      }
+    }
+
+    if (currentItem.processedBlob) {
+      currentItem.status = 'processed';
+    } else if (hasMask) {
+      currentItem.status = 'masked';
+    } else {
+      currentItem.status = 'ready';
+    }
+  }
+
+  function setActiveMedia(id) {
+    saveCurrentActiveState();
+
+    const targetItem = mediaQueue.find(item => item.id === id);
+    if (!targetItem) return;
+
+    activeMediaId = id;
+    currentFile = targetItem.file;
+    currentFileType = targetItem.type;
+    currentProcessedBlob = targetItem.processedBlob;
+
+    mediaName.textContent = targetItem.name;
+    mediaTypeBadge.textContent = targetItem.type.toUpperCase();
+    btnDownload.disabled = !currentProcessedBlob;
+
+    if (targetItem.type === 'image') {
+      videoBar.classList.add('hidden');
+      videoOptionsPanel.classList.add('hidden');
+      loadImageFromUrl(targetItem.objectUrl, targetItem);
+    } else {
+      videoBar.classList.remove('hidden');
+      videoOptionsPanel.classList.remove('hidden');
+      loadVideoFromUrl(targetItem.objectUrl, targetItem);
+    }
+
+    renderQueueUI();
+  }
+
+  function loadImageFromUrl(url, item) {
+    const img = new Image();
+    img.onload = () => {
+      setupCanvasDimensions(img.width, img.height);
+      item.dimensions = { width: img.width, height: img.height };
+      mediaCtx.drawImage(img, 0, 0);
+
+      // Restore mask canvas
+      if (item.maskData && item.maskData.width === img.width && item.maskData.height === img.height) {
+        maskCtx.putImageData(item.maskData, 0, 0);
+        maskHistory = [...item.maskHistory];
+      } else {
+        clearMask();
+      }
+
+      // Restore processed canvas if available
+      if (item.processedBlob) {
+        const procImg = new Image();
+        procImg.onload = () => {
+          resultCtx.drawImage(procImg, 0, 0);
+          if (isComparing) compareContainer.classList.remove('hidden');
+        };
+        procImg.src = URL.createObjectURL(item.processedBlob);
+      } else {
+        resultCtx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+        if (isComparing) toggleCompareMode();
+      }
+    };
+    img.src = url;
+  }
+
+  function loadVideoFromUrl(url, item) {
     sourceVideo.src = url;
     sourceVideo.onloadedmetadata = () => {
-      setupCanvasDimensions(sourceVideo.videoWidth, sourceVideo.videoHeight);
+      const w = sourceVideo.videoWidth;
+      const h = sourceVideo.videoHeight;
+      setupCanvasDimensions(w, h);
+      item.dimensions = { width: w, height: h };
       sourceVideo.currentTime = 0;
-      sourceVideo.play().then(() => {
-        sourceVideo.pause();
-        drawCurrentVideoFrame();
-      });
-      clearMask();
-      saveMaskHistory();
+      drawCurrentVideoFrame();
+
+      // Restore mask
+      if (item.maskData && item.maskData.width === w && item.maskData.height === h) {
+        maskCtx.putImageData(item.maskData, 0, 0);
+        maskHistory = [...item.maskHistory];
+      } else {
+        clearMask();
+      }
+
+      if (!item.processedBlob) {
+        resultCtx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+        if (isComparing) toggleCompareMode();
+      }
     };
   }
 
@@ -261,55 +404,213 @@ document.addEventListener('DOMContentLoaded', () => {
     mediaDimensions.textContent = `${w}x${h}`;
   }
 
+  // Queue UI Rendering & Selection
+  function renderQueueUI() {
+    queueCountBadge.textContent = `${mediaQueue.length} ${mediaQueue.length === 1 ? 'item' : 'items'}`;
+
+    const selectedItems = mediaQueue.filter(item => item.selected);
+    const selectedCount = selectedItems.length;
+
+    chkSelectAll.checked = mediaQueue.length > 0 && selectedCount === mediaQueue.length;
+    chkSelectAll.indeterminate = selectedCount > 0 && selectedCount < mediaQueue.length;
+
+    selectedDeleteCount.textContent = selectedCount;
+    selectedDownloadCount.textContent = selectedCount;
+
+    btnBulkDelete.disabled = selectedCount === 0;
+    btnBulkDownload.disabled = selectedCount === 0;
+
+    queueItemsContainer.innerHTML = '';
+
+    mediaQueue.forEach(item => {
+      const card = document.createElement('div');
+      card.className = `queue-card ${item.id === activeMediaId ? 'active' : ''} ${item.selected ? 'selected' : ''}`;
+
+      const statusClass = `status-${item.status}`;
+      const statusText = item.status.toUpperCase();
+
+      card.innerHTML = `
+        <img src="${item.thumbnailUrl}" class="queue-card-thumb" alt="${item.name}">
+        <div class="queue-card-overlay">
+          <input type="checkbox" class="queue-checkbox queue-card-check" ${item.selected ? 'checked' : ''} data-id="${item.id}">
+          <button class="queue-card-delete" data-id="${item.id}" title="Remove file">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M18 6L6 18M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+        <div class="queue-card-info">
+          <span class="queue-card-name" title="${item.name}">${item.name}</span>
+          <div class="queue-card-meta">
+            <span class="queue-card-tag">${item.type.toUpperCase()}</span>
+            <span class="queue-card-status ${statusClass}">${statusText}</span>
+          </div>
+        </div>
+      `;
+
+      card.addEventListener('click', (e) => {
+        if (e.target.classList.contains('queue-card-check') || e.target.closest('.queue-card-delete')) {
+          return;
+        }
+        if (activeMediaId !== item.id) {
+          setActiveMedia(item.id);
+        }
+      });
+
+      const chk = card.querySelector('.queue-card-check');
+      chk.addEventListener('change', (e) => {
+        item.selected = e.target.checked;
+        renderQueueUI();
+      });
+
+      const delBtn = card.querySelector('.queue-card-delete');
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        deleteSingleItem(item.id);
+      });
+
+      queueItemsContainer.appendChild(card);
+    });
+  }
+
+  function toggleSelectAll(checked) {
+    mediaQueue.forEach(item => item.selected = checked);
+    renderQueueUI();
+  }
+
+  function deleteSingleItem(id) {
+    const index = mediaQueue.findIndex(item => item.id === id);
+    if (index === -1) return;
+
+    const [deletedItem] = mediaQueue.splice(index, 1);
+    if (deletedItem.objectUrl) URL.revokeObjectURL(deletedItem.objectUrl);
+
+    if (activeMediaId === id) {
+      if (mediaQueue.length > 0) {
+        const nextIndex = Math.min(index, mediaQueue.length - 1);
+        setActiveMedia(mediaQueue[nextIndex].id);
+      } else {
+        activeMediaId = null;
+        resetWorkspace();
+      }
+    } else {
+      renderQueueUI();
+    }
+  }
+
+  function deleteSelectedItems() {
+    const toDelete = mediaQueue.filter(item => item.selected);
+    if (toDelete.length === 0) return;
+
+    if (!confirm(`Delete ${toDelete.length} selected media item(s) from workspace?`)) {
+      return;
+    }
+
+    toDelete.forEach(item => {
+      if (item.objectUrl) URL.revokeObjectURL(item.objectUrl);
+    });
+
+    mediaQueue = mediaQueue.filter(item => !item.selected);
+
+    if (mediaQueue.length === 0) {
+      activeMediaId = null;
+      resetWorkspace();
+    } else {
+      const currentStillExists = mediaQueue.some(item => item.id === activeMediaId);
+      if (!currentStillExists) {
+        setActiveMedia(mediaQueue[0].id);
+      } else {
+        renderQueueUI();
+      }
+    }
+  }
+
+  async function downloadSelectedItems() {
+    const selectedItems = mediaQueue.filter(item => item.selected);
+    if (selectedItems.length === 0) return;
+
+    if (selectedItems.length === 1) {
+      const item = selectedItems[0];
+      const blob = item.processedBlob || item.file;
+      const ext = item.type === 'video' ? 'webm' : (item.processedBlob ? 'png' : item.name.split('.').pop());
+      const nameWithoutExt = item.name.replace(/\.[^/.]+$/, "");
+      const fileName = `${nameWithoutExt}_cleaned.${ext}`;
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } else {
+      if (typeof JSZip === 'undefined') {
+        alert('ZIP packaging library is loading, please try again in a moment.');
+        return;
+      }
+
+      const zip = new JSZip();
+      const folder = zip.folder("LogoRemovie_Cleaned");
+
+      selectedItems.forEach((item, idx) => {
+        const blob = item.processedBlob || item.file;
+        const ext = item.type === 'video' ? 'webm' : (item.processedBlob ? 'png' : item.name.split('.').pop());
+        const nameWithoutExt = item.name.replace(/\.[^/.]+$/, "");
+        const fileName = `${idx + 1}_${nameWithoutExt}_cleaned.${ext}`;
+        folder.file(fileName, blob);
+      });
+
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `LogoRemovie_Batch_Cleaned_${Date.now()}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+  }
+
   // Preset Demos
   function loadDemoImage() {
-    // Generate high quality canvas demo photo with watermark
-    const w = 1280, h = 720;
-    setupCanvasDimensions(w, h);
-    
-    // Draw pretty background landscape gradient
-    const grad = mediaCtx.createLinearGradient(0, 0, w, h);
+    const canvas = document.createElement('canvas');
+    canvas.width = 1280;
+    canvas.height = 720;
+    const ctx = canvas.getContext('2d');
+
+    const grad = ctx.createLinearGradient(0, 0, 1280, 720);
     grad.addColorStop(0, '#1e1b4b');
     grad.addColorStop(0.5, '#312e81');
     grad.addColorStop(1, '#4338ca');
-    mediaCtx.fillStyle = grad;
-    mediaCtx.fillRect(0, 0, w, h);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 1280, 720);
 
-    // Decorative shapes
-    mediaCtx.fillStyle = 'rgba(236, 72, 153, 0.3)';
-    mediaCtx.beginPath();
-    mediaCtx.arc(w * 0.3, h * 0.4, 200, 0, Math.PI * 2);
-    mediaCtx.fill();
+    ctx.fillStyle = 'rgba(236, 72, 153, 0.3)';
+    ctx.beginPath();
+    ctx.arc(380, 280, 200, 0, Math.PI * 2);
+    ctx.fill();
 
-    mediaCtx.fillStyle = 'rgba(56, 189, 248, 0.3)';
-    mediaCtx.beginPath();
-    mediaCtx.arc(w * 0.7, h * 0.6, 260, 0, Math.PI * 2);
-    mediaCtx.fill();
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.3)';
+    ctx.beginPath();
+    ctx.arc(900, 430, 260, 0, Math.PI * 2);
+    ctx.fill();
 
-    // Render Watermark Logo in Corner
-    mediaCtx.fillStyle = 'rgba(255, 255, 255, 0.85)';
-    mediaCtx.font = 'bold 36px Inter';
-    mediaCtx.fillText('SAMPLE WATERMARK © 2026', w - 520, h - 60);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.font = 'bold 36px Inter';
+    ctx.fillText('SAMPLE WATERMARK © 2026', 760, 660);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(740, 610, 500, 80);
 
-    mediaCtx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
-    mediaCtx.lineWidth = 4;
-    mediaCtx.strokeRect(w - 540, h - 110, 500, 80);
-
-    currentFileType = 'image';
-    mediaName.textContent = 'demo_landscape_watermark.png';
-    mediaTypeBadge.textContent = 'DEMO IMAGE';
-    
-    dropZone.classList.add('hidden');
-    editorWorkspace.classList.remove('hidden');
-    videoBar.classList.add('hidden');
-    videoOptionsPanel.classList.add('hidden');
-
-    clearMask();
-    saveMaskHistory();
+    canvas.toBlob((blob) => {
+      const demoFile = new File([blob], 'demo_landscape_watermark.png', { type: 'image/png' });
+      addFilesToQueue([demoFile]);
+    }, 'image/png');
   }
 
   function loadDemoVideo() {
-    // Generate animated demo video canvas and convert to Blob
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = 640;
     tempCanvas.height = 360;
@@ -322,13 +623,14 @@ document.addEventListener('DOMContentLoaded', () => {
     recorder.ondataavailable = (e) => chunks.push(e.data);
     recorder.onstop = () => {
       const blob = new Blob(chunks, { type: 'video/webm' });
-      processLoadedFile(new File([blob], 'demo_video_watermark.webm', { type: 'video/webm' }));
+      const demoFile = new File([blob], 'demo_video_watermark.webm', { type: 'video/webm' });
+      addFilesToQueue([demoFile]);
     };
 
     recorder.start();
 
     let frame = 0;
-    const totalDemoFrames = 90; // 3 seconds video
+    const totalDemoFrames = 90;
 
     function renderDemoFrame() {
       if (frame >= totalDemoFrames) {
@@ -336,14 +638,12 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      // Background motion
       const g = tempCtx.createLinearGradient(0, 0, 640, 360);
       g.addColorStop(0, '#0f172a');
       g.addColorStop(1, '#1e293b');
       tempCtx.fillStyle = g;
       tempCtx.fillRect(0, 0, 640, 360);
 
-      // Bouncing circle
       const cx = 100 + (frame * 5) % 440;
       const cy = 180 + Math.sin(frame * 0.1) * 60;
       tempCtx.fillStyle = '#38bdf8';
@@ -351,7 +651,6 @@ document.addEventListener('DOMContentLoaded', () => {
       tempCtx.arc(cx, cy, 40, 0, Math.PI * 2);
       tempCtx.fill();
 
-      // Watermark Overlay on video
       tempCtx.fillStyle = 'rgba(255, 255, 255, 0.9)';
       tempCtx.font = 'bold 22px Inter';
       tempCtx.fillText('DEMO VIDEO LOGO', 420, 320);
@@ -366,7 +665,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderDemoFrame();
   }
 
-  // Mask Drawing Logic
+  // Mask Drawing Controls
   function getCanvasCoords(e) {
     const rect = maskCanvas.getBoundingClientRect();
     const scaleX = maskCanvas.width / rect.width;
@@ -400,7 +699,6 @@ document.addEventListener('DOMContentLoaded', () => {
   function drawMask(e) {
     const coords = getCanvasCoords(e);
 
-    // Cursor preview for brush
     cursorCtx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
     if (activeTool === 'brush') {
       cursorCtx.strokeStyle = '#ef4444';
@@ -420,7 +718,6 @@ document.addEventListener('DOMContentLoaded', () => {
       startX = coords.x;
       startY = coords.y;
     } else if (activeTool === 'box') {
-      // Clear temp and redraw current box
       restoreLastMaskState();
       const width = coords.x - startX;
       const height = coords.y - startY;
@@ -438,13 +735,15 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isDrawing) {
       isDrawing = false;
       saveMaskHistory();
+      saveCurrentActiveState();
+      renderQueueUI();
     }
   }
 
   function saveMaskHistory() {
     const copy = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
     maskHistory.push(copy);
-    if (maskHistory.length > 20) maskHistory.shift(); // Max 20 undo steps
+    if (maskHistory.length > 20) maskHistory.shift();
   }
 
   function restoreLastMaskState() {
@@ -458,18 +757,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function undoMask() {
     if (maskHistory.length > 1) {
-      maskHistory.pop(); // Remove current
+      maskHistory.pop();
       const prevState = maskHistory[maskHistory.length - 1];
       maskCtx.putImageData(prevState, 0, 0);
     } else if (maskHistory.length === 1) {
       clearMask();
     }
+    saveCurrentActiveState();
+    renderQueueUI();
   }
 
   function clearMask() {
     maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
     maskHistory = [];
     saveMaskHistory();
+    saveCurrentActiveState();
+    renderQueueUI();
   }
 
   function runAutoDetect() {
@@ -484,9 +787,11 @@ document.addEventListener('DOMContentLoaded', () => {
     maskCtx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
 
     saveMaskHistory();
+    saveCurrentActiveState();
+    renderQueueUI();
   }
 
-  // Video Controls
+  // Video Controller Sync
   function toggleVideoPlay() {
     if (sourceVideo.paused) {
       sourceVideo.play();
@@ -521,7 +826,7 @@ document.addEventListener('DOMContentLoaded', () => {
     videoTime.textContent = `${formatTime(cur)} / ${formatTime(dur)}`;
   }
 
-  // Comparison Split Slider
+  // Comparison View
   function toggleCompareMode() {
     isComparing = !isComparing;
     compareContainer.classList.toggle('hidden', !isComparing);
@@ -538,14 +843,14 @@ document.addEventListener('DOMContentLoaded', () => {
       const rect = compareContainer.getBoundingClientRect();
       let x = e.clientX - rect.left;
       x = Math.max(0, Math.min(x, rect.width));
-      
+
       const percent = (x / rect.width) * 100;
       compareDivider.style.left = `${percent}%`;
       resultCanvas.style.clipPath = `polygon(0 0, ${percent}% 0, ${percent}% 100%, 0 100%)`;
     });
   }
 
-  // Logo Removal Execution
+  // Logo Removal Algorithm Processing
   async function processLogoRemoval() {
     const selectedAlgo = document.querySelector('input[name="algo"]:checked').value;
     const inpaintRadius = parseInt(inpaintRadiusInput.value, 10);
@@ -566,7 +871,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (currentFileType === 'image') {
-      // Process Image in real time
       const imgData = mediaCtx.getImageData(0, 0, mediaCanvas.width, mediaCanvas.height);
 
       if (selectedAlgo === 'inpaint') {
@@ -581,15 +885,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
       resultCtx.putImageData(imgData, 0, 0);
 
-      // Convert result canvas to blob for download
       resultCanvas.toBlob((blob) => {
         currentProcessedBlob = blob;
         btnDownload.disabled = false;
+
+        const currentItem = mediaQueue.find(item => item.id === activeMediaId);
+        if (currentItem) {
+          currentItem.processedBlob = blob;
+          currentItem.status = 'processed';
+        }
+        renderQueueUI();
+
         if (!isComparing) toggleCompareMode();
       }, 'image/png');
 
     } else if (currentFileType === 'video') {
-      // Process Video frame by frame with modal progress
       renderModal.classList.remove('hidden');
       renderProgressBar.style.width = '0%';
       renderProgressPercent.textContent = '0%';
@@ -608,7 +918,6 @@ document.addEventListener('DOMContentLoaded', () => {
           renderProgressPercent.textContent = `${percent}%`;
           renderFrameStats.textContent = `Frame ${currentFrame} / ${totalFrames}`;
 
-          // Draw mini preview
           renderMiniCanvas.width = canvas.width;
           renderMiniCanvas.height = canvas.height;
           renderMiniCtx.drawImage(canvas, 0, 0);
@@ -617,8 +926,14 @@ document.addEventListener('DOMContentLoaded', () => {
           currentProcessedBlob = blob;
           btnDownload.disabled = false;
           renderModal.classList.add('hidden');
-          
-          // Render cleaned frame into result canvas for split comparison
+
+          const currentItem = mediaQueue.find(item => item.id === activeMediaId);
+          if (currentItem) {
+            currentItem.processedBlob = blob;
+            currentItem.status = 'processed';
+          }
+          renderQueueUI();
+
           resultCtx.drawImage(renderMiniCanvas, 0, 0, resultCanvas.width, resultCanvas.height);
           if (!isComparing) toggleCompareMode();
         },
@@ -653,7 +968,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const ext = currentFileType === 'video' ? 'webm' : 'png';
     const nameWithoutExt = currentFile ? currentFile.name.replace(/\.[^/.]+$/, "") : 'cleaned_media';
-    a.download = `${nameWithoutExt}_nologo.${ext}`;
+    a.download = `${nameWithoutExt}_cleaned.${ext}`;
     
     document.body.appendChild(a);
     a.click();
@@ -662,6 +977,12 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function resetWorkspace() {
+    mediaQueue.forEach(item => {
+      if (item.objectUrl) URL.revokeObjectURL(item.objectUrl);
+    });
+    mediaQueue = [];
+    activeMediaId = null;
+
     dropZone.classList.remove('hidden');
     editorWorkspace.classList.add('hidden');
     fileInput.value = '';
