@@ -552,7 +552,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (selectedItems.length === 1) {
       const item = selectedItems[0];
       const blob = item.processedBlob || item.file;
-      const ext = item.type === 'video' ? 'webm' : (item.processedBlob ? 'png' : item.name.split('.').pop());
+      const ext = item.type === 'video' 
+        ? ((blob && blob.type && blob.type.includes('mp4')) ? 'mp4' : 'webm')
+        : (item.processedBlob ? 'png' : item.name.split('.').pop());
       const nameWithoutExt = item.name.replace(/\.[^/.]+$/, "");
       const fileName = `${nameWithoutExt}_cleaned.${ext}`;
 
@@ -575,7 +577,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
       selectedItems.forEach((item, idx) => {
         const blob = item.processedBlob || item.file;
-        const ext = item.type === 'video' ? 'webm' : (item.processedBlob ? 'png' : item.name.split('.').pop());
+        const ext = item.type === 'video'
+          ? ((blob && blob.type && blob.type.includes('mp4')) ? 'mp4' : 'webm')
+          : (item.processedBlob ? 'png' : item.name.split('.').pop());
         const nameWithoutExt = item.name.replace(/\.[^/.]+$/, "");
         const fileName = `${idx + 1}_${nameWithoutExt}_cleaned.${ext}`;
         folder.file(fileName, blob);

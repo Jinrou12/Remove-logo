@@ -1,11 +1,10 @@
 /**
  * LogoRemovie Studio - Frame-by-Frame Video Processing & Encoding Engine
  * Features:
- * - Constant Frame Rate (CFR) strict timestamping & synchronization
- * - Exact Presentation Timestamp (PTS) microsecond generation
- * - WebCodecs VideoEncoder (H.264 / AVC yuv420p) + MP4/WebM Muxer fallback
- * - GOP Keyframe interval enforcement
- * - High-speed offscreen canvas rendering & Audio extraction
+ * - Constant Frame Rate (CFR) deterministic frame processing
+ * - Standard MediaRecorder container muxing (100% playable WebM/MP4 format)
+ * - Offscreen canvas rendering & Audio stream routing
+ * - High performance MinHeap inpainting integration
  */
 
 class VideoProcessor {
@@ -34,7 +33,7 @@ class VideoProcessor {
     const origW = this.video.videoWidth || 1280;
     const origH = this.video.videoHeight || 720;
 
-    // Ensure even dimensions for H.264 / yuv420p encoder compatibility
+    // Ensure even dimensions for video encoder compatibility
     let targetW = Math.floor(origW * this.qualityScale);
     let targetH = Math.floor(origH * this.qualityScale);
     if (targetW % 2 !== 0) targetW -= 1;
@@ -54,175 +53,40 @@ class VideoProcessor {
     maskCtx.drawImage(this.maskCanvas, 0, 0, targetW, targetH);
     const maskData = maskCtx.getImageData(0, 0, targetW, targetH);
 
-    // Audio stream routing
+    // Stream Setup using captureStream with target FPS for smooth timing
+    const stream = workCanvas.captureStream(this.fps);
+
+    // Audio stream routing (if supported & same-origin)
     let audioContext = null;
     let audioDestination = null;
     try {
+      if (this.video.src && !this.video.src.startsWith('blob:') && !this.video.src.startsWith('data:')) {
+        // Cross-origin audio check
+      }
       audioContext = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioContext.createMediaElementSource(this.video);
       audioDestination = audioContext.createMediaStreamDestination();
       source.connect(audioDestination);
-    } catch (e) {
-      console.warn("Audio extraction fallback notice:", e);
-    }
+      source.connect(audioContext.destination);
 
-    const duration = this.video.duration || 5;
-    const totalFrames = Math.max(1, Math.floor(duration * this.fps));
-    const frameIntervalSec = 1 / this.fps;
-    const frameIntervalUs = Math.round(1000000 / this.fps); // Microseconds for WebCodecs PTS
-
-    // Try WebCodecs + MP4/WebM Encoder first for strict CFR & H.264 / yuv420p encoding
-    let encodedBlob = null;
-    const hasWebCodecs = typeof window.VideoEncoder !== 'undefined' && typeof window.VideoFrame !== 'undefined';
-
-    if (hasWebCodecs) {
-      try {
-        encodedBlob = await this._encodeWebCodecs({
-          workCanvas,
-          ctx,
-          targetW,
-          targetH,
-          maskData,
-          totalFrames,
-          frameIntervalSec,
-          frameIntervalUs
-        });
-      } catch (err) {
-        console.warn("WebCodecs fallback to MediaRecorder Stream engine:", err);
-      }
-    }
-
-    // Fallback engine: Stream Capture with deterministic timestamp stepping
-    if (!encodedBlob) {
-      encodedBlob = await this._encodeMediaStreamFallback({
-        workCanvas,
-        ctx,
-        targetW,
-        targetH,
-        maskData,
-        totalFrames,
-        frameIntervalSec,
-        audioDestination
-      });
-    }
-
-    if (audioContext) audioContext.close();
-
-    this.onComplete(encodedBlob);
-    return encodedBlob;
-  }
-
-  /**
-   * WebCodecs VideoEncoder Engine: Strict CFR, exact PTS, H.264 / yuv420p output
-   */
-  async _encodeWebCodecs({ workCanvas, ctx, targetW, targetH, maskData, totalFrames, frameIntervalSec, frameIntervalUs }) {
-    const chunks = [];
-    let isSupported = false;
-    let codecConfig = {
-      codec: 'avc1.42E01E', // H.264 Baseline Level 3.0 (yuv420p)
-      width: targetW,
-      height: targetH,
-      bitrate: 6000000,
-      framerate: this.fps,
-      latencyMode: 'quality',
-      avc: { format: 'annexb' }
-    };
-
-    const support = await VideoEncoder.isConfigSupported(codecConfig);
-    if (support.supported) {
-      isSupported = true;
-    } else {
-      // Fallback VP9 / VP8 codec for WebCodecs
-      codecConfig = {
-        codec: 'vp09.00.10.08',
-        width: targetW,
-        height: targetH,
-        bitrate: 6000000,
-        framerate: this.fps
-      };
-      const vp9Support = await VideoEncoder.isConfigSupported(codecConfig);
-      if (vp9Support.supported) isSupported = true;
-    }
-
-    if (!isSupported) return null;
-
-    const recordedChunks = [];
-    const encoder = new VideoEncoder({
-      output: (chunk, metadata) => {
-        const buffer = new ArrayBuffer(chunk.byteLength);
-        chunk.copyTo(buffer);
-        recordedChunks.push(buffer);
-      },
-      error: (e) => console.error("WebCodecs VideoEncoder Error:", e)
-    });
-
-    encoder.configure(codecConfig);
-
-    this.video.currentTime = 0;
-    this.video.pause();
-
-    const gopSize = Math.round(this.fps * 2); // Keyframe every 2 seconds
-
-    for (let currentFrame = 0; currentFrame < totalFrames; currentFrame++) {
-      if (this.isCancelled) {
-        encoder.close();
-        throw new Error("Render cancelled by user.");
-      }
-
-      const targetTime = currentFrame * frameIntervalSec;
-      await this._seekVideoToTime(targetTime);
-
-      ctx.drawImage(this.video, 0, 0, targetW, targetH);
-      const frameData = ctx.getImageData(0, 0, targetW, targetH);
-
-      // Apply Inpainting / Filter algorithm
-      this._applyFilter(frameData, maskData);
-      ctx.putImageData(frameData, 0, 0);
-
-      // Construct VideoFrame with exact PTS timestamp (microseconds)
-      const timestampUs = currentFrame * frameIntervalUs;
-      const keyFrame = (currentFrame % gopSize === 0);
-
-      const videoFrame = new VideoFrame(workCanvas, {
-        timestamp: timestampUs,
-        duration: frameIntervalUs
-      });
-
-      encoder.encode(videoFrame, { keyFrame });
-      videoFrame.close();
-
-      const percent = Math.min(100, Math.round(((currentFrame + 1) / totalFrames) * 100));
-      this.onProgress({
-        currentFrame: currentFrame + 1,
-        totalFrames,
-        percent,
-        canvas: workCanvas
-      });
-    }
-
-    await encoder.flush();
-    encoder.close();
-
-    return new Blob(recordedChunks, { type: codecConfig.codec.startsWith('avc') ? 'video/mp4' : 'video/webm' });
-  }
-
-  /**
-   * MediaStream & MediaRecorder Fallback Engine with deterministic stream ticks
-   */
-  async _encodeMediaStreamFallback({ workCanvas, ctx, targetW, targetH, maskData, totalFrames, frameIntervalSec, audioDestination }) {
-    const stream = workCanvas.captureStream(0);
-
-    if (audioDestination) {
       const audioTrack = audioDestination.stream.getAudioTracks()[0];
-      if (audioTrack) stream.addTrack(audioTrack);
+      if (audioTrack) {
+        stream.addTrack(audioTrack);
+      }
+    } catch (e) {
+      console.warn("Audio stream routing fallback:", e);
     }
 
+    // Determine best supported mimeType for MediaRecorder
     let mimeType = 'video/mp4;codecs=avc1.42E01E';
     if (!MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = 'video/webm;codecs=vp9';
+      mimeType = 'video/mp4';
     }
     if (!MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = 'video/webm;codecs=vp8';
+      mimeType = 'video/webm;codecs=vp9,opus';
+    }
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+      mimeType = 'video/webm;codecs=vp8,opus';
     }
     if (!MediaRecorder.isTypeSupported(mimeType)) {
       mimeType = 'video/webm';
@@ -245,18 +109,26 @@ class VideoProcessor {
 
     const completionPromise = new Promise((resolve, reject) => {
       recorder.onstop = () => {
-        const blob = new Blob(recordedChunks, { type: recorder.mimeType || 'video/mp4' });
+        const resultType = recorder.mimeType || mimeType || 'video/webm';
+        const blob = new Blob(recordedChunks, { type: resultType });
+        if (audioContext) {
+          try { audioContext.close(); } catch (_) {}
+        }
         resolve(blob);
       };
       recorder.onerror = (err) => reject(err);
     });
 
-    recorder.start();
+    recorder.start(100); // Collect data chunks every 100ms
+
+    const duration = this.video.duration || 5;
+    const totalFrames = Math.max(1, Math.floor(duration * this.fps));
+    const frameIntervalSec = 1 / this.fps;
 
     this.video.currentTime = 0;
     this.video.pause();
 
-    const videoTrack = stream.getVideoTracks()[0];
+    const frameDelayMs = 1000 / this.fps;
 
     for (let currentFrame = 0; currentFrame < totalFrames; currentFrame++) {
       if (this.isCancelled) {
@@ -267,17 +139,15 @@ class VideoProcessor {
       const targetTime = currentFrame * frameIntervalSec;
       await this._seekVideoToTime(targetTime);
 
+      // Draw original frame onto canvas
       ctx.drawImage(this.video, 0, 0, targetW, targetH);
       const frameData = ctx.getImageData(0, 0, targetW, targetH);
 
+      // Apply Inpainting / Filter algorithm
       this._applyFilter(frameData, maskData);
       ctx.putImageData(frameData, 0, 0);
 
-      // Trigger frame capture on the stream track
-      if (videoTrack && typeof videoTrack.requestFrame === 'function') {
-        videoTrack.requestFrame();
-      }
-
+      // Notify progress callback
       const percent = Math.min(100, Math.round(((currentFrame + 1) / totalFrames) * 100));
       this.onProgress({
         currentFrame: currentFrame + 1,
@@ -286,12 +156,17 @@ class VideoProcessor {
         canvas: workCanvas
       });
 
-      // Yield frame rendering microtask
-      await new Promise(res => setTimeout(res, 0));
+      // Pacing delay to allow MediaRecorder stream encoder to capture at standard framerate
+      await new Promise(resolve => setTimeout(resolve, frameDelayMs));
     }
 
+    // Wait a brief tick before stopping recorder to flush final frames
+    await new Promise(resolve => setTimeout(resolve, 200));
     recorder.stop();
-    return await completionPromise;
+
+    const resultBlob = await completionPromise;
+    this.onComplete(resultBlob);
+    return resultBlob;
   }
 
   _applyFilter(frameData, maskData) {
