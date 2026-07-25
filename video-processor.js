@@ -46,7 +46,10 @@ class VideoProcessor {
     const maskData = maskCtx.getImageData(0, 0, targetW, targetH);
 
     // Stream & MediaRecorder Setup
-    const stream = workCanvas.captureStream(this.fps);
+    // Use captureStream(0) so frames are captured on-demand (when we draw them)
+    // rather than on a real-time clock — prevents frame duplication/skipping and
+    // eliminates the artificial duration inflation caused by processing overhead.
+    const stream = workCanvas.captureStream(0);
     
     // Web Audio API to route original video audio into export stream
     let audioContext = null;
@@ -145,8 +148,14 @@ class VideoProcessor {
         canvas: workCanvas
       });
 
-      // Small yield to allow MediaRecorder stream capture & UI repaint
-      await new Promise(res => setTimeout(res, 1000 / this.fps));
+      // Trigger an explicit frame capture on the on-demand stream, then yield
+      // two animation frames so the browser can flush the canvas update to the
+      // MediaRecorder track.  This keeps recorded duration == original duration.
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack && typeof videoTrack.requestFrame === 'function') {
+        videoTrack.requestFrame();
+      }
+      await new Promise(res => requestAnimationFrame(() => requestAnimationFrame(res)));
     }
 
     recorder.stop();

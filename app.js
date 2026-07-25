@@ -43,6 +43,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const brushSizeVal = document.getElementById('brushSizeVal');
   const btnUndoMask = document.getElementById('btnUndoMask');
   const btnClearMask = document.getElementById('btnClearMask');
+  const btnClearAllMasks = document.getElementById('btnClearAllMasks');
 
   // Video Controls
   const videoBar = document.getElementById('videoBar');
@@ -146,6 +147,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     btnUndoMask.addEventListener('click', undoMask);
     btnClearMask.addEventListener('click', clearMask);
+    btnClearAllMasks.addEventListener('click', clearAllMasks);
 
     // Canvas Mouse / Touch Drawing
     maskCanvas.addEventListener('mousedown', startMaskDraw);
@@ -772,6 +774,32 @@ document.addEventListener('DOMContentLoaded', () => {
     maskHistory = [];
     saveMaskHistory();
     saveCurrentActiveState();
+    renderQueueUI();
+  }
+
+  function clearAllMasks() {
+    if (mediaQueue.length === 0) return;
+    const count = mediaQueue.filter(item => item.maskData || (item.maskHistory && item.maskHistory.length > 0)).length;
+    if (count === 0) return;
+    if (!confirm(`Clear masks from all ${mediaQueue.length} queued file(s)? This will also discard any processed results.`)) return;
+
+    // Wipe stored mask & results for every queued item
+    mediaQueue.forEach(item => {
+      item.maskHistory = [];
+      item.maskData = null;
+      item.processedBlob = null;
+      item.status = 'ready';
+    });
+
+    // Reset active canvas
+    maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    maskHistory = [];
+    saveMaskHistory();
+    resultCtx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+    currentProcessedBlob = null;
+    btnDownload.disabled = true;
+    if (isComparing) toggleCompareMode();
+
     renderQueueUI();
   }
 
