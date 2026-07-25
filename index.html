@@ -314,11 +314,11 @@
             <h3 class="panel-title">Video Render Options</h3>
             <div class="setting-row">
               <label for="videoFps">Output FPS</label>
-              <select id="videoFps" class="select-input">
-                <option value="30" selected>30 FPS (Standard)</option>
-                <option value="60">60 FPS (Smooth)</option>
-                <option value="24">24 FPS (Cinematic)</option>
-              </select>
+              <div class="fps-control">
+                <input type="number" id="videoFps" min="1" max="60" value="12" class="fps-input">
+                <span class="fps-unit">FPS</span>
+              </div>
+              <span class="fps-hint">&#9650; 12 recommended for faster export</span>
             </div>
             <div class="setting-row">
               <label for="videoQuality">Render Scale</label>
@@ -359,6 +359,7 @@
           <h3>Processing & Removing Logo...</h3>
         </div>
         <div class="modal-body">
+          <p id="renderBatchStatus" class="render-batch-status"></p>
           <p id="renderStatusText">Inpainting video frames and processing audio streams...</p>
           <div class="progress-bar-container">
             <div id="renderProgressBar" class="progress-bar-fill" style="width: 0%;"></div>

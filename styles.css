@@ -745,6 +745,61 @@ body {
   border-color: var(--primary);
 }
 
+/* FPS manual input control */
+.fps-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fps-input {
+  width: 72px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  font-weight: 600;
+  outline: none;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+
+.fps-input::-webkit-outer-spin-button,
+.fps-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+}
+
+.fps-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-glow);
+}
+
+.fps-unit {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+.fps-hint {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--text-sub);
+  margin-top: 4px;
+}
+
+/* Render modal — batch status line */
+.render-batch-status {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--primary);
+  min-height: 1.2em;
+  letter-spacing: 0.01em;
+}
+
 .panel-actions {
   margin-top: auto;
   display: flex;

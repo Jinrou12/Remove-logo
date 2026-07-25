@@ -69,6 +69,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Render Modal
   const renderModal = document.getElementById('renderModal');
+  const renderBatchStatus = document.getElementById('renderBatchStatus');
   const renderStatusText = document.getElementById('renderStatusText');
   const renderProgressBar = document.getElementById('renderProgressBar');
   const renderProgressPercent = document.getElementById('renderProgressPercent');
@@ -100,6 +101,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let currentProcessedBlob = null;
   let isComparing = false;
   let activeVideoProcessor = null;
+  let isBatchCancelled = false;
 
   // Initialize Application
   initEventListeners();
@@ -878,113 +880,173 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Logo Removal Algorithm Processing
+  // Logo Removal Algorithm Processing — batch-aware
   async function processLogoRemoval() {
     const selectedAlgo = document.querySelector('input[name="algo"]:checked').value;
     const inpaintRadius = parseInt(inpaintRadiusInput.value, 10);
     const blurRadius = parseInt(blurRadiusInput.value, 10);
+    const fps = Math.max(1, Math.min(60, parseInt(document.getElementById('videoFps').value, 10) || 12));
+    const qualityScale = parseFloat(document.getElementById('videoQuality').value) || 1;
 
-    const maskData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
-    let hasMask = false;
-    for (let i = 3; i < maskData.data.length; i += 4) {
-      if (maskData.data[i] > 10) {
-        hasMask = true;
-        break;
+    // Flush the currently-displayed mask into the active queue item before we scan
+    saveCurrentActiveState();
+
+    // Collect every queue item that has a non-empty mask
+    const itemsToProcess = mediaQueue.filter(item => {
+      if (!item.maskData) return false;
+      const d = item.maskData.data;
+      for (let i = 3; i < d.length; i += 4) {
+        if (d[i] > 10) return true;
       }
-    }
+      return false;
+    });
 
-    if (!hasMask) {
-      alert('Please select or paint over the logo area first!');
+    if (itemsToProcess.length === 0) {
+      alert('Please select or paint over the logo area on at least one file first!');
       return;
     }
 
-    if (currentFileType === 'image') {
-      const imgData = mediaCtx.getImageData(0, 0, mediaCanvas.width, mediaCanvas.height);
+    isBatchCancelled = false;
+    renderModal.classList.remove('hidden');
+    renderProgressBar.style.width = '0%';
+    renderProgressPercent.textContent = '0%';
+    renderFrameStats.textContent = '';
 
-      if (selectedAlgo === 'inpaint') {
-        InpaintEngine.teleaInpaint(imgData, maskData, inpaintRadius);
-      } else if (selectedAlgo === 'blur') {
-        InpaintEngine.blurDelogo(imgData, maskData, blurRadius);
-      } else if (selectedAlgo === 'mosaic') {
-        InpaintEngine.mosaicPixelate(imgData, maskData, 16);
-      } else if (selectedAlgo === 'color') {
-        InpaintEngine.colorFill(imgData, maskData);
-      }
+    const total = itemsToProcess.length;
 
-      resultCtx.putImageData(imgData, 0, 0);
+    for (let i = 0; i < total; i++) {
+      if (isBatchCancelled) break;
 
-      resultCanvas.toBlob((blob) => {
-        currentProcessedBlob = blob;
-        btnDownload.disabled = false;
-
-        const currentItem = mediaQueue.find(item => item.id === activeMediaId);
-        if (currentItem) {
-          currentItem.processedBlob = blob;
-          currentItem.status = 'processed';
-        }
-        renderQueueUI();
-
-        if (!isComparing) toggleCompareMode();
-      }, 'image/png');
-
-    } else if (currentFileType === 'video') {
-      renderModal.classList.remove('hidden');
+      const item = itemsToProcess[i];
+      renderBatchStatus.textContent = total > 1
+        ? `File ${i + 1} of ${total}: ${item.name}`
+        : '';
       renderProgressBar.style.width = '0%';
       renderProgressPercent.textContent = '0%';
 
-      const fps = parseInt(document.getElementById('videoFps').value, 10);
-      const qualityScale = parseFloat(document.getElementById('videoQuality').value);
-
-      activeVideoProcessor = new VideoProcessor(sourceVideo, maskCanvas, {
-        fps,
-        qualityScale,
-        algo: selectedAlgo,
-        inpaintRadius,
-        blurRadius,
-        onProgress: ({ currentFrame, totalFrames, percent, canvas }) => {
-          renderProgressBar.style.width = `${percent}%`;
-          renderProgressPercent.textContent = `${percent}%`;
-          renderFrameStats.textContent = `Frame ${currentFrame} / ${totalFrames}`;
-
-          renderMiniCanvas.width = canvas.width;
-          renderMiniCanvas.height = canvas.height;
-          renderMiniCtx.drawImage(canvas, 0, 0);
-        },
-        onComplete: (blob) => {
-          currentProcessedBlob = blob;
-          btnDownload.disabled = false;
-          renderModal.classList.add('hidden');
-
-          const currentItem = mediaQueue.find(item => item.id === activeMediaId);
-          if (currentItem) {
-            currentItem.processedBlob = blob;
-            currentItem.status = 'processed';
-          }
-          renderQueueUI();
-
-          resultCtx.drawImage(renderMiniCanvas, 0, 0, resultCanvas.width, resultCanvas.height);
-          if (!isComparing) toggleCompareMode();
-        },
-        onError: (err) => {
-          alert(`Video processing error: ${err.message}`);
-          renderModal.classList.add('hidden');
-        }
-      });
-
       try {
-        await activeVideoProcessor.processAndEncode();
+        if (item.type === 'image') {
+          await processImageItemBatch(item, selectedAlgo, inpaintRadius, blurRadius);
+        } else {
+          await processVideoItemBatch(item, selectedAlgo, fps, qualityScale, inpaintRadius, blurRadius);
+        }
       } catch (err) {
-        console.warn(err);
+        if (!isBatchCancelled) console.warn(`Error processing ${item.name}:`, err);
+      }
+
+      renderQueueUI();
+    }
+
+    renderModal.classList.add('hidden');
+    renderBatchStatus.textContent = '';
+
+    // Refresh the active item's display in the result canvas
+    const activeItem = mediaQueue.find(it => it.id === activeMediaId);
+    if (activeItem && activeItem.processedBlob) {
+      currentProcessedBlob = activeItem.processedBlob;
+      btnDownload.disabled = false;
+
+      if (activeItem.type === 'image') {
+        const img = new Image();
+        img.onload = () => {
+          resultCtx.drawImage(img, 0, 0, resultCanvas.width, resultCanvas.height);
+          if (!isComparing) toggleCompareMode();
+        };
+        img.src = URL.createObjectURL(activeItem.processedBlob);
+      } else {
+        resultCtx.drawImage(renderMiniCanvas, 0, 0, resultCanvas.width, resultCanvas.height);
+        if (!isComparing) toggleCompareMode();
       }
     }
   }
 
+  // Off-screen image processing (no canvas UI needed)
+  function processImageItemBatch(item, algo, inpaintRadius, blurRadius) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = img.width;
+        offCanvas.height = img.height;
+        const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
+        offCtx.drawImage(img, 0, 0);
+        const imgData = offCtx.getImageData(0, 0, img.width, img.height);
+        const maskData = item.maskData;
+
+        if (algo === 'inpaint') InpaintEngine.teleaInpaint(imgData, maskData, inpaintRadius);
+        else if (algo === 'blur') InpaintEngine.blurDelogo(imgData, maskData, blurRadius);
+        else if (algo === 'mosaic') InpaintEngine.mosaicPixelate(imgData, maskData, 16);
+        else if (algo === 'color') InpaintEngine.colorFill(imgData, maskData);
+
+        offCtx.putImageData(imgData, 0, 0);
+        offCanvas.toBlob(blob => {
+          if (blob) {
+            item.processedBlob = blob;
+            item.status = 'processed';
+          }
+          resolve(blob);
+        }, 'image/png');
+      };
+      img.onerror = reject;
+      img.src = item.objectUrl;
+    });
+  }
+
+  // Off-screen video processing using a temporary <video> element
+  function processVideoItemBatch(item, algo, fps, qualityScale, inpaintRadius, blurRadius) {
+    return new Promise((resolve, reject) => {
+      const tempVid = document.createElement('video');
+      tempVid.crossOrigin = 'anonymous';
+      tempVid.muted = true;
+      tempVid.src = item.objectUrl;
+
+      tempVid.onloadedmetadata = () => {
+        // Reconstruct a canvas from the stored maskData for this item
+        const maskOffCanvas = document.createElement('canvas');
+        maskOffCanvas.width = item.maskData.width;
+        maskOffCanvas.height = item.maskData.height;
+        maskOffCanvas.getContext('2d').putImageData(item.maskData, 0, 0);
+
+        activeVideoProcessor = new VideoProcessor(tempVid, maskOffCanvas, {
+          fps,
+          qualityScale,
+          algo,
+          inpaintRadius,
+          blurRadius,
+          onProgress: ({ currentFrame, totalFrames, percent, canvas }) => {
+            renderProgressBar.style.width = `${percent}%`;
+            renderProgressPercent.textContent = `${percent}%`;
+            renderFrameStats.textContent = `Frame ${currentFrame} / ${totalFrames}`;
+            renderMiniCanvas.width = canvas.width;
+            renderMiniCanvas.height = canvas.height;
+            renderMiniCtx.drawImage(canvas, 0, 0);
+          },
+          onComplete: blob => {
+            item.processedBlob = blob;
+            item.status = 'processed';
+            resolve(blob);
+          },
+          onError: err => reject(err)
+        });
+
+        activeVideoProcessor.processAndEncode().catch(err => {
+          if (!isBatchCancelled) reject(err);
+          else resolve(null);
+        });
+      };
+
+      tempVid.onerror = reject;
+    });
+  }
+
   function cancelVideoProcessing() {
+    isBatchCancelled = true;
     if (activeVideoProcessor) {
       activeVideoProcessor.cancel();
       activeVideoProcessor = null;
     }
     renderModal.classList.add('hidden');
+    renderBatchStatus.textContent = '';
   }
 
   function downloadProcessedFile() {
