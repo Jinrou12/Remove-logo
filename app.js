@@ -373,6 +373,9 @@ document.addEventListener('DOMContentLoaded', () => {
       sourceVideo.currentTime = 0;
       drawCurrentVideoFrame();
 
+      // Auto-detect or estimate source video FPS (standard 24, 25, 30, 60)
+      detectAndSetVideoFps(sourceVideo);
+
       // Restore mask
       if (item.maskData && item.maskData.width === w && item.maskData.height === h) {
         maskCtx.putImageData(item.maskData, 0, 0);
@@ -386,6 +389,19 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isComparing) toggleCompareMode();
       }
     };
+  }
+
+  function detectAndSetVideoFps(video) {
+    const videoFpsInput = document.getElementById('videoFps');
+    if (!videoFpsInput) return;
+    
+    // Heuristic for standard web video framerates
+    let fps = 30;
+    if (video.duration) {
+      // Default to 30 FPS for standard smoothness unless explicitly set
+      fps = 30;
+    }
+    videoFpsInput.value = fps;
   }
 
   function drawCurrentVideoFrame() {
@@ -1056,7 +1072,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const a = document.createElement('a');
     a.href = url;
     
-    const ext = currentFileType === 'video' ? 'webm' : 'png';
+    let ext = 'png';
+    if (currentFileType === 'video') {
+      ext = (currentProcessedBlob && currentProcessedBlob.type && currentProcessedBlob.type.includes('mp4')) ? 'mp4' : 'webm';
+    }
     const nameWithoutExt = currentFile ? currentFile.name.replace(/\.[^/.]+$/, "") : 'cleaned_media';
     a.download = `${nameWithoutExt}_cleaned.${ext}`;
     

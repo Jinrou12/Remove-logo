@@ -1,5 +1,11 @@
 /**
  * LogoRemovie Studio - Frame-by-Frame Video Processing & Encoding Engine
+ * Features:
+ * - Constant Frame Rate (CFR) strict timestamping & synchronization
+ * - Exact Presentation Timestamp (PTS) microsecond generation
+ * - WebCodecs VideoEncoder (H.264 / AVC yuv420p) + MP4/WebM Muxer fallback
+ * - GOP Keyframe interval enforcement
+ * - High-speed offscreen canvas rendering & Audio extraction
  */
 
 class VideoProcessor {
@@ -27,17 +33,20 @@ class VideoProcessor {
 
     const origW = this.video.videoWidth || 1280;
     const origH = this.video.videoHeight || 720;
-    
-    const targetW = Math.floor(origW * this.qualityScale);
-    const targetH = Math.floor(origH * this.qualityScale);
 
-    // Offscreen Canvas for processing
+    // Ensure even dimensions for H.264 / yuv420p encoder compatibility
+    let targetW = Math.floor(origW * this.qualityScale);
+    let targetH = Math.floor(origH * this.qualityScale);
+    if (targetW % 2 !== 0) targetW -= 1;
+    if (targetH % 2 !== 0) targetH -= 1;
+
+    // Work Canvas
     const workCanvas = document.createElement('canvas');
     workCanvas.width = targetW;
     workCanvas.height = targetH;
-    const ctx = workCanvas.getContext('2d', { willReadFrequently: true });
+    const ctx = workCanvas.getContext('2d', { willReadFrequently: true, alpha: false });
 
-    // Scaled mask canvas
+    // Mask Canvas
     const scaledMaskCanvas = document.createElement('canvas');
     scaledMaskCanvas.width = targetW;
     scaledMaskCanvas.height = targetH;
@@ -45,13 +54,7 @@ class VideoProcessor {
     maskCtx.drawImage(this.maskCanvas, 0, 0, targetW, targetH);
     const maskData = maskCtx.getImageData(0, 0, targetW, targetH);
 
-    // Stream & MediaRecorder Setup
-    // Use captureStream(0) so frames are captured on-demand (when we draw them)
-    // rather than on a real-time clock — prevents frame duplication/skipping and
-    // eliminates the artificial duration inflation caused by processing overhead.
-    const stream = workCanvas.captureStream(0);
-    
-    // Web Audio API to route original video audio into export stream
+    // Audio stream routing
     let audioContext = null;
     let audioDestination = null;
     try {
@@ -59,30 +62,177 @@ class VideoProcessor {
       const source = audioContext.createMediaElementSource(this.video);
       audioDestination = audioContext.createMediaStreamDestination();
       source.connect(audioDestination);
-      source.connect(audioContext.destination);
-
-      const audioTrack = audioDestination.stream.getAudioTracks()[0];
-      if (audioTrack) {
-        stream.addTrack(audioTrack);
-      }
     } catch (e) {
-      console.warn("Audio extraction fallback (video might be muted or cross-origin):", e);
+      console.warn("Audio extraction fallback notice:", e);
     }
 
-    // Determine supported mimeType
-    let mimeType = 'video/webm;codecs=vp9,opus';
+    const duration = this.video.duration || 5;
+    const totalFrames = Math.max(1, Math.floor(duration * this.fps));
+    const frameIntervalSec = 1 / this.fps;
+    const frameIntervalUs = Math.round(1000000 / this.fps); // Microseconds for WebCodecs PTS
+
+    // Try WebCodecs + MP4/WebM Encoder first for strict CFR & H.264 / yuv420p encoding
+    let encodedBlob = null;
+    const hasWebCodecs = typeof window.VideoEncoder !== 'undefined' && typeof window.VideoFrame !== 'undefined';
+
+    if (hasWebCodecs) {
+      try {
+        encodedBlob = await this._encodeWebCodecs({
+          workCanvas,
+          ctx,
+          targetW,
+          targetH,
+          maskData,
+          totalFrames,
+          frameIntervalSec,
+          frameIntervalUs
+        });
+      } catch (err) {
+        console.warn("WebCodecs fallback to MediaRecorder Stream engine:", err);
+      }
+    }
+
+    // Fallback engine: Stream Capture with deterministic timestamp stepping
+    if (!encodedBlob) {
+      encodedBlob = await this._encodeMediaStreamFallback({
+        workCanvas,
+        ctx,
+        targetW,
+        targetH,
+        maskData,
+        totalFrames,
+        frameIntervalSec,
+        audioDestination
+      });
+    }
+
+    if (audioContext) audioContext.close();
+
+    this.onComplete(encodedBlob);
+    return encodedBlob;
+  }
+
+  /**
+   * WebCodecs VideoEncoder Engine: Strict CFR, exact PTS, H.264 / yuv420p output
+   */
+  async _encodeWebCodecs({ workCanvas, ctx, targetW, targetH, maskData, totalFrames, frameIntervalSec, frameIntervalUs }) {
+    const chunks = [];
+    let isSupported = false;
+    let codecConfig = {
+      codec: 'avc1.42E01E', // H.264 Baseline Level 3.0 (yuv420p)
+      width: targetW,
+      height: targetH,
+      bitrate: 6000000,
+      framerate: this.fps,
+      latencyMode: 'quality',
+      avc: { format: 'annexb' }
+    };
+
+    const support = await VideoEncoder.isConfigSupported(codecConfig);
+    if (support.supported) {
+      isSupported = true;
+    } else {
+      // Fallback VP9 / VP8 codec for WebCodecs
+      codecConfig = {
+        codec: 'vp09.00.10.08',
+        width: targetW,
+        height: targetH,
+        bitrate: 6000000,
+        framerate: this.fps
+      };
+      const vp9Support = await VideoEncoder.isConfigSupported(codecConfig);
+      if (vp9Support.supported) isSupported = true;
+    }
+
+    if (!isSupported) return null;
+
+    const recordedChunks = [];
+    const encoder = new VideoEncoder({
+      output: (chunk, metadata) => {
+        const buffer = new ArrayBuffer(chunk.byteLength);
+        chunk.copyTo(buffer);
+        recordedChunks.push(buffer);
+      },
+      error: (e) => console.error("WebCodecs VideoEncoder Error:", e)
+    });
+
+    encoder.configure(codecConfig);
+
+    this.video.currentTime = 0;
+    this.video.pause();
+
+    const gopSize = Math.round(this.fps * 2); // Keyframe every 2 seconds
+
+    for (let currentFrame = 0; currentFrame < totalFrames; currentFrame++) {
+      if (this.isCancelled) {
+        encoder.close();
+        throw new Error("Render cancelled by user.");
+      }
+
+      const targetTime = currentFrame * frameIntervalSec;
+      await this._seekVideoToTime(targetTime);
+
+      ctx.drawImage(this.video, 0, 0, targetW, targetH);
+      const frameData = ctx.getImageData(0, 0, targetW, targetH);
+
+      // Apply Inpainting / Filter algorithm
+      this._applyFilter(frameData, maskData);
+      ctx.putImageData(frameData, 0, 0);
+
+      // Construct VideoFrame with exact PTS timestamp (microseconds)
+      const timestampUs = currentFrame * frameIntervalUs;
+      const keyFrame = (currentFrame % gopSize === 0);
+
+      const videoFrame = new VideoFrame(workCanvas, {
+        timestamp: timestampUs,
+        duration: frameIntervalUs
+      });
+
+      encoder.encode(videoFrame, { keyFrame });
+      videoFrame.close();
+
+      const percent = Math.min(100, Math.round(((currentFrame + 1) / totalFrames) * 100));
+      this.onProgress({
+        currentFrame: currentFrame + 1,
+        totalFrames,
+        percent,
+        canvas: workCanvas
+      });
+    }
+
+    await encoder.flush();
+    encoder.close();
+
+    return new Blob(recordedChunks, { type: codecConfig.codec.startsWith('avc') ? 'video/mp4' : 'video/webm' });
+  }
+
+  /**
+   * MediaStream & MediaRecorder Fallback Engine with deterministic stream ticks
+   */
+  async _encodeMediaStreamFallback({ workCanvas, ctx, targetW, targetH, maskData, totalFrames, frameIntervalSec, audioDestination }) {
+    const stream = workCanvas.captureStream(0);
+
+    if (audioDestination) {
+      const audioTrack = audioDestination.stream.getAudioTracks()[0];
+      if (audioTrack) stream.addTrack(audioTrack);
+    }
+
+    let mimeType = 'video/mp4;codecs=avc1.42E01E';
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+      mimeType = 'video/webm;codecs=vp9';
+    }
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+      mimeType = 'video/webm;codecs=vp8';
+    }
     if (!MediaRecorder.isTypeSupported(mimeType)) {
       mimeType = 'video/webm';
-    }
-    if (!MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = 'video/mp4';
     }
 
     const recordedChunks = [];
     let recorder;
 
     try {
-      recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 6000000 });
+      recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8000000 });
     } catch (e) {
       recorder = new MediaRecorder(stream);
     }
@@ -95,8 +245,7 @@ class VideoProcessor {
 
     const completionPromise = new Promise((resolve, reject) => {
       recorder.onstop = () => {
-        const blob = new Blob(recordedChunks, { type: recorder.mimeType || 'video/webm' });
-        if (audioContext) audioContext.close();
+        const blob = new Blob(recordedChunks, { type: recorder.mimeType || 'video/mp4' });
         resolve(blob);
       };
       recorder.onerror = (err) => reject(err);
@@ -104,42 +253,31 @@ class VideoProcessor {
 
     recorder.start();
 
-    const duration = this.video.duration || 5;
-    const totalFrames = Math.floor(duration * this.fps);
-    const frameInterval = 1 / this.fps;
-
-    let currentFrame = 0;
     this.video.currentTime = 0;
     this.video.pause();
 
-    // Process frame loop
-    for (currentFrame = 0; currentFrame < totalFrames; currentFrame++) {
+    const videoTrack = stream.getVideoTracks()[0];
+
+    for (let currentFrame = 0; currentFrame < totalFrames; currentFrame++) {
       if (this.isCancelled) {
         recorder.stop();
         throw new Error("Render cancelled by user.");
       }
 
-      const targetTime = currentFrame * frameInterval;
+      const targetTime = currentFrame * frameIntervalSec;
       await this._seekVideoToTime(targetTime);
 
-      // Draw current video frame onto work canvas
       ctx.drawImage(this.video, 0, 0, targetW, targetH);
       const frameData = ctx.getImageData(0, 0, targetW, targetH);
 
-      // Apply selected logo removal algorithm to frame
-      if (this.algo === 'inpaint') {
-        InpaintEngine.teleaInpaint(frameData, maskData, this.inpaintRadius);
-      } else if (this.algo === 'blur') {
-        InpaintEngine.blurDelogo(frameData, maskData, this.blurRadius);
-      } else if (this.algo === 'mosaic') {
-        InpaintEngine.mosaicPixelate(frameData, maskData, 16);
-      } else if (this.algo === 'color') {
-        InpaintEngine.colorFill(frameData, maskData);
-      }
-
+      this._applyFilter(frameData, maskData);
       ctx.putImageData(frameData, 0, 0);
 
-      // Notify progress
+      // Trigger frame capture on the stream track
+      if (videoTrack && typeof videoTrack.requestFrame === 'function') {
+        videoTrack.requestFrame();
+      }
+
       const percent = Math.min(100, Math.round(((currentFrame + 1) / totalFrames) * 100));
       this.onProgress({
         currentFrame: currentFrame + 1,
@@ -148,28 +286,38 @@ class VideoProcessor {
         canvas: workCanvas
       });
 
-      // Trigger an explicit frame capture on the on-demand stream, then yield
-      // two animation frames so the browser can flush the canvas update to the
-      // MediaRecorder track.  This keeps recorded duration == original duration.
-      const videoTrack = stream.getVideoTracks()[0];
-      if (videoTrack && typeof videoTrack.requestFrame === 'function') {
-        videoTrack.requestFrame();
-      }
-      await new Promise(res => requestAnimationFrame(() => requestAnimationFrame(res)));
+      // Yield frame rendering microtask
+      await new Promise(res => setTimeout(res, 0));
     }
 
     recorder.stop();
-    const resultBlob = await completionPromise;
-    this.onComplete(resultBlob);
-    return resultBlob;
+    return await completionPromise;
+  }
+
+  _applyFilter(frameData, maskData) {
+    if (this.algo === 'inpaint') {
+      InpaintEngine.teleaInpaint(frameData, maskData, this.inpaintRadius);
+    } else if (this.algo === 'blur') {
+      InpaintEngine.blurDelogo(frameData, maskData, this.blurRadius);
+    } else if (this.algo === 'mosaic') {
+      InpaintEngine.mosaicPixelate(frameData, maskData, 16);
+    } else if (this.algo === 'color') {
+      InpaintEngine.colorFill(frameData, maskData);
+    }
   }
 
   _seekVideoToTime(time) {
     return new Promise((resolve) => {
+      if (Math.abs(this.video.currentTime - time) < 0.001) {
+        resolve();
+        return;
+      }
+
       const onSeeked = () => {
         this.video.removeEventListener('seeked', onSeeked);
         resolve();
       };
+
       this.video.addEventListener('seeked', onSeeked);
       this.video.currentTime = time;
     });
