@@ -1033,9 +1033,12 @@ document.addEventListener('DOMContentLoaded', () => {
           algo,
           inpaintRadius,
           blurRadius,
-          onProgress: ({ currentFrame, totalFrames, percent, canvas }) => {
+          onProgress: ({ currentFrame, totalFrames, percent, canvas, phase }) => {
             renderProgressBar.style.width = `${percent}%`;
             renderProgressPercent.textContent = `${percent}%`;
+            renderStatusText.textContent = phase === 'inpainting' 
+              ? `Step 1/2: Removing logo from frame ${currentFrame} of ${totalFrames}...`
+              : `Step 2/2: Encoding smooth video stream (${percent}%)...`;
             renderFrameStats.textContent = `Frame ${currentFrame} / ${totalFrames}`;
             renderMiniCanvas.width = canvas.width;
             renderMiniCanvas.height = canvas.height;

@@ -1,10 +1,10 @@
 /**
  * LogoRemovie Studio - Frame-by-Frame Video Processing & Encoding Engine
  * Features:
- * - Constant Frame Rate (CFR) deterministic frame processing
- * - Standard MediaRecorder container muxing (100% playable WebM/MP4 format)
- * - Offscreen canvas rendering & Audio stream routing
- * - High performance MinHeap inpainting integration
+ * - 2-Phase Architecture: Offline Frame Inpainting -> High-Precision CFR Playback Recording
+ * - High-precision performance.now() pacing eliminates video lag and frame duplicates
+ * - GPU ImageBitmap frame buffering with immediate memory release (close())
+ * - Standard MediaRecorder container muxing (100% smooth, playable WebM/MP4 format)
  */
 
 class VideoProcessor {
@@ -33,7 +33,7 @@ class VideoProcessor {
     const origW = this.video.videoWidth || 1280;
     const origH = this.video.videoHeight || 720;
 
-    // Ensure even dimensions for video encoder compatibility
+    // Ensure even dimensions for encoder compatibility
     let targetW = Math.floor(origW * this.qualityScale);
     let targetH = Math.floor(origH * this.qualityScale);
     if (targetW % 2 !== 0) targetW -= 1;
@@ -53,16 +53,56 @@ class VideoProcessor {
     maskCtx.drawImage(this.maskCanvas, 0, 0, targetW, targetH);
     const maskData = maskCtx.getImageData(0, 0, targetW, targetH);
 
-    // Stream Setup using captureStream with target FPS for smooth timing
+    const duration = this.video.duration || 5;
+    const totalFrames = Math.max(1, Math.floor(duration * this.fps));
+    const frameIntervalSec = 1 / this.fps;
+    const frameDurationMs = 1000 / this.fps;
+
+    this.video.currentTime = 0;
+    this.video.pause();
+
+    // PHASE 1: Pre-process & Inpaint all frames into GPU ImageBitmap buffer
+    const processedBitmaps = [];
+
+    for (let currentFrame = 0; currentFrame < totalFrames; currentFrame++) {
+      if (this.isCancelled) {
+        this._cleanupBitmaps(processedBitmaps);
+        throw new Error("Render cancelled by user.");
+      }
+
+      const targetTime = currentFrame * frameIntervalSec;
+      await this._seekVideoToTime(targetTime);
+
+      // Draw original video frame
+      ctx.drawImage(this.video, 0, 0, targetW, targetH);
+      const frameData = ctx.getImageData(0, 0, targetW, targetH);
+
+      // Apply Inpainting / Filter algorithm
+      this._applyFilter(frameData, maskData);
+      ctx.putImageData(frameData, 0, 0);
+
+      // Convert to GPU ImageBitmap for ultra-fast rendering in Phase 2
+      const bitmap = await createImageBitmap(workCanvas);
+      processedBitmaps.push(bitmap);
+
+      // Notify progress (0% - 50% for Phase 1)
+      const percent = Math.min(50, Math.round(((currentFrame + 1) / totalFrames) * 50));
+      this.onProgress({
+        currentFrame: currentFrame + 1,
+        totalFrames,
+        percent,
+        canvas: workCanvas,
+        phase: 'inpainting'
+      });
+    }
+
+    // PHASE 2: High-Precision Real-Time Stream Recording to MediaRecorder
     const stream = workCanvas.captureStream(this.fps);
 
-    // Audio stream routing (if supported & same-origin)
+    // Route audio stream if available
     let audioContext = null;
     let audioDestination = null;
     try {
-      if (this.video.src && !this.video.src.startsWith('blob:') && !this.video.src.startsWith('data:')) {
-        // Cross-origin audio check
-      }
       audioContext = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioContext.createMediaElementSource(this.video);
       audioDestination = audioContext.createMediaStreamDestination();
@@ -74,23 +114,15 @@ class VideoProcessor {
         stream.addTrack(audioTrack);
       }
     } catch (e) {
-      console.warn("Audio stream routing fallback:", e);
+      console.warn("Audio extraction fallback notice:", e);
     }
 
-    // Determine best supported mimeType for MediaRecorder
+    // Determine supported mimeType
     let mimeType = 'video/mp4;codecs=avc1.42E01E';
-    if (!MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = 'video/mp4';
-    }
-    if (!MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = 'video/webm;codecs=vp9,opus';
-    }
-    if (!MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = 'video/webm;codecs=vp8,opus';
-    }
-    if (!MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = 'video/webm';
-    }
+    if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/mp4';
+    if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/webm;codecs=vp9,opus';
+    if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/webm;codecs=vp8,opus';
+    if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/webm';
 
     const recordedChunks = [];
     let recorder;
@@ -119,54 +151,55 @@ class VideoProcessor {
       recorder.onerror = (err) => reject(err);
     });
 
-    recorder.start(100); // Collect data chunks every 100ms
+    recorder.start(100);
 
-    const duration = this.video.duration || 5;
-    const totalFrames = Math.max(1, Math.floor(duration * this.fps));
-    const frameIntervalSec = 1 / this.fps;
-
-    this.video.currentTime = 0;
-    this.video.pause();
-
-    const frameDelayMs = 1000 / this.fps;
+    // Play back clean ImageBitmaps onto workCanvas with strict performance.now() timing
+    const startTime = performance.now();
 
     for (let currentFrame = 0; currentFrame < totalFrames; currentFrame++) {
       if (this.isCancelled) {
         recorder.stop();
+        this._cleanupBitmaps(processedBitmaps);
         throw new Error("Render cancelled by user.");
       }
 
-      const targetTime = currentFrame * frameIntervalSec;
-      await this._seekVideoToTime(targetTime);
+      const bitmap = processedBitmaps[currentFrame];
+      ctx.drawImage(bitmap, 0, 0);
+      bitmap.close(); // Immediately release GPU memory
 
-      // Draw original frame onto canvas
-      ctx.drawImage(this.video, 0, 0, targetW, targetH);
-      const frameData = ctx.getImageData(0, 0, targetW, targetH);
-
-      // Apply Inpainting / Filter algorithm
-      this._applyFilter(frameData, maskData);
-      ctx.putImageData(frameData, 0, 0);
-
-      // Notify progress callback
-      const percent = Math.min(100, Math.round(((currentFrame + 1) / totalFrames) * 100));
+      // Notify progress (50% - 100% for Phase 2)
+      const percent = 50 + Math.min(50, Math.round(((currentFrame + 1) / totalFrames) * 50));
       this.onProgress({
         currentFrame: currentFrame + 1,
         totalFrames,
         percent,
-        canvas: workCanvas
+        canvas: workCanvas,
+        phase: 'encoding'
       });
 
-      // Pacing delay to allow MediaRecorder stream encoder to capture at standard framerate
-      await new Promise(resolve => setTimeout(resolve, frameDelayMs));
+      // High precision frame timing alignment
+      const targetTimeMs = startTime + (currentFrame + 1) * frameDurationMs;
+      const delayMs = targetTimeMs - performance.now();
+
+      if (delayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
     }
 
-    // Wait a brief tick before stopping recorder to flush final frames
-    await new Promise(resolve => setTimeout(resolve, 200));
+    await new Promise(resolve => setTimeout(resolve, 250));
     recorder.stop();
 
     const resultBlob = await completionPromise;
     this.onComplete(resultBlob);
     return resultBlob;
+  }
+
+  _cleanupBitmaps(bitmaps) {
+    if (bitmaps && bitmaps.length > 0) {
+      for (const bm of bitmaps) {
+        try { bm.close(); } catch (_) {}
+      }
+    }
   }
 
   _applyFilter(frameData, maskData) {
